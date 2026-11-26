@@ -35,7 +35,6 @@ def download_video():
         clean_url = VIDEO_URL.split("?si=")[0].split("&si=")[0]
         fmt = "bv*[height>=720][height<=1080]+ba/bv*[height<=1080]+ba/b[height>=720]/b"
 
-        # Percobaan 1: Prioritaskan klien TV & Safari yang membuka akses 1080p
         cmd1 = [
             "yt-dlp",
             "--remote-components", "ejs:github",
@@ -53,7 +52,6 @@ def download_video():
         w, h = get_video_resolution("work/source.mp4")
         print(f"Resolusi percobaan 1: {w}x{h}")
 
-        # Percobaan 2 (cadangan jika masih < 720p): coba klien android_vr/tv tanpa cookies
         if h < 720:
             print("Resolusi masih di bawah 720p, mencoba jalur klien HD cadangan...")
             shutil.move("work/source.mp4", "work/source_fallback.mp4")
@@ -204,34 +202,63 @@ Transkrip:
 
     raise RuntimeError(f"Semua kandidat model Gemini gagal diakses. Error terakhir: {last_error}")
 
-def load_face_detector():
-    xml_paths = ["haarcascade_frontalface_default.xml"]
-    if hasattr(cv2, "data") and hasattr(cv2.data, "haarcascades"):
-        xml_paths.append(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
-    for path in xml_paths:
-        if os.path.exists(path):
-            detector = cv2.CascadeClassifier(path)
-            if not detector.empty():
-                return detector
-    return None
+def load_dnn_face_detector():
+    if not hasattr(cv2, "dnn"):
+        return None
+    proto_path = "work/deploy.prototxt"
+    model_path = "work/res10_300x300_ssd_iter_140000.caffemodel"
+    proto_url = "https://raw.githubusercontent.com/opencv/opencv/master/samples/dnn/face_detector/deploy.prototxt"
+    model_url = "https://raw.githubusercontent.com/opencv/opencv_3rdparty/dnn_samples_face_detector_20170830/res10_300x300_ssd_iter_140000.caffemodel"
+
+    try:
+        if not os.path.exists(proto_path):
+            r = requests.get(proto_url, timeout=30)
+            r.raise_for_status()
+            with open(proto_path, "wb") as f:
+                f.write(r.content)
+        if not os.path.exists(model_path):
+            r = requests.get(model_url, timeout=60)
+            r.raise_for_status()
+            with open(model_path, "wb") as f:
+                f.write(r.content)
+        return cv2.dnn.readNetFromCaffe(proto_path, model_path)
+    except Exception as e:
+        print(f"DNN face detector dilewati ({e}), beralih ke pelacak gerak pembicara.")
+        return None
+
+def detect_faces_dnn(net, frame, width, height):
+    blob = cv2.dnn.blobFromImage(frame, 1.0, (300, 300), (104.0, 177.0, 123.0))
+    net.setInput(blob)
+    detections = net.forward()
+    faces = []
+    for i in range(detections.shape[2]):
+        conf = float(detections[0, 0, i, 2])
+        if conf < 0.55:
+            continue
+        box = detections[0, 0, i, 3:7] * np.array([width, height, width, height])
+        x1, y1, x2, y2 = box.astype(int)
+        x1, y1 = max(0, x1), max(0, y1)
+        x2, y2 = min(width, x2), min(height, y2)
+        w, h = x2 - x1, y2 - y1
+        center_y = y1 + h * 0.5
+        # Pastikan ukuran wajah wajar dan berada di area atas/tengah (bukan meja/logo)
+        if w > width * 0.03 and h > height * 0.06 and (height * 0.06) < center_y < (height * 0.68):
+            faces.append((x1, y1, w, h))
+    return faces
 
 def detect_active_speaker_expression(video_path, start_s, end_s):
     cap = cv2.VideoCapture(video_path)
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    crop_w = int(height * 9 / 16)
+    crop_w = (int(height * 9 / 16) // 2) * 2
     duration = end_s - start_s
 
     if crop_w >= width:
         cap.release()
         return "0", width, width, height
 
-    detector = load_face_detector()
-    if detector is None:
-        cap.release()
-        return f"{(width - crop_w) // 2}", crop_w, width, height
-
+    dnn_net = load_dnn_face_detector()
     step = 0.4
     samples = []
     last_center = width // 2
@@ -253,16 +280,7 @@ def detect_active_speaker_expression(video_path, start_s, end_s):
         gray1 = cv2.cvtColor(frame1, cv2.COLOR_BGR2GRAY)
         gray2 = cv2.cvtColor(frame2, cv2.COLOR_BGR2GRAY)
 
-        min_face = max(48, int(height * 0.09))
-        raw_faces = detector.detectMultiScale(
-            gray1, scaleFactor=1.12, minNeighbors=6, minSize=(min_face, min_face)
-        )
-
-        # Abaikan objek di bagian bawah layar (< 65% tinggi frame) agar tidak menangkap monitor/meja
-        faces = [
-            (x, y, w, h) for (x, y, w, h) in raw_faces
-            if (y + h * 0.5) < (height * 0.65)
-        ]
+        faces = detect_faces_dnn(dnn_net, frame1, width, height) if dnn_net is not None else []
 
         if len(faces) == 1:
             x, y, w, h = faces[0]
@@ -281,11 +299,20 @@ def detect_active_speaker_expression(video_path, start_s, end_s):
                     motion = float(np.mean(cv2.absdiff(roi1, roi2)))
                 else:
                     motion = 0.0
-                score = motion * (w * h) ** 0.25
+                score = motion * ((w * h) ** 0.25)
                 if score > best_score:
                     best_score = score
                     chosen_center = x + w // 2
             last_center = chosen_center
+        else:
+            # Cadangan murni NumPy/OpenCV: lacak puncak gerak area kepala/bahu (10% - 62% tinggi frame)
+            y_top, y_bot = int(height * 0.10), int(height * 0.62)
+            diff_roi = cv2.absdiff(gray1[y_top:y_bot, :], gray2[y_top:y_bot, :])
+            col_profile = np.mean(diff_roi, axis=0)
+            kernel_w = max(15, crop_w // 2)
+            smooth_profile = np.convolve(col_profile, np.ones(kernel_w) / kernel_w, mode="same")
+            if float(np.max(smooth_profile)) > 2.5:
+                last_center = int(np.argmax(smooth_profile))
 
         crop_x = max(0, min(width - crop_w, last_center - crop_w // 2))
         samples.append((round(t - start_s, 2), int(crop_x)))
