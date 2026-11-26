@@ -1,5 +1,6 @@
 import os
 import json
+import shutil
 import textwrap
 import subprocess
 import requests
@@ -17,24 +18,69 @@ os.makedirs("output", exist_ok=True)
 def run_cmd(cmd):
     subprocess.run(cmd, check=True)
 
+def get_video_resolution(path):
+    if not os.path.exists(path):
+        return 0, 0
+    cap = cv2.VideoCapture(path)
+    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    cap.release()
+    return w, h
+
 def download_video():
-    print("1. Mengunduh video sumber...")
+    print("1. Mengunduh video sumber kualitas HD (target 1080p)...")
     if "drive.google.com" in VIDEO_URL:
         run_cmd(["gdown", "--fuzzy", VIDEO_URL, "-O", "work/source.mp4"])
     else:
         clean_url = VIDEO_URL.split("?si=")[0].split("&si=")[0]
-        cmd = [
+        fmt = "bv*[height>=720][height<=1080]+ba/bv*[height<=1080]+ba/b[height>=720]/b"
+
+        # Percobaan 1: Prioritaskan klien TV & Safari yang membuka akses 1080p
+        cmd1 = [
             "yt-dlp",
             "--remote-components", "ejs:github",
-            "--extractor-args", "youtube:player_client=web,mweb,tv",
-            "-f", "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+            "--extractor-args", "youtube:player_client=tv,web_safari,web",
+            "-S", "res:1080,fps",
+            "-f", fmt,
             "--merge-output-format", "mp4",
             "-o", "work/source.mp4",
             clean_url
         ]
         if os.path.exists("cookies.txt"):
-            cmd.extend(["--cookies", "cookies.txt"])
-        run_cmd(cmd)
+            cmd1.extend(["--cookies", "cookies.txt"])
+        run_cmd(cmd1)
+
+        w, h = get_video_resolution("work/source.mp4")
+        print(f"Resolusi percobaan 1: {w}x{h}")
+
+        # Percobaan 2 (cadangan jika masih < 720p): coba klien android_vr/tv tanpa cookies
+        if h < 720:
+            print("Resolusi masih di bawah 720p, mencoba jalur klien HD cadangan...")
+            shutil.move("work/source.mp4", "work/source_fallback.mp4")
+            cmd2 = [
+                "yt-dlp",
+                "--remote-components", "ejs:github",
+                "--extractor-args", "youtube:player_client=android_vr,tv",
+                "-S", "res:1080,fps",
+                "-f", fmt,
+                "--merge-output-format", "mp4",
+                "-o", "work/source.mp4",
+                clean_url
+            ]
+            try:
+                run_cmd(cmd2)
+                w2, h2 = get_video_resolution("work/source.mp4")
+                print(f"Resolusi percobaan 2: {w2}x{h2}")
+                if h2 <= h:
+                    shutil.move("work/source_fallback.mp4", "work/source.mp4")
+                else:
+                    os.remove("work/source_fallback.mp4")
+            except Exception as e:
+                print(f"Jalur cadangan dilewati ({e}), memakai hasil pertama.")
+                shutil.move("work/source_fallback.mp4", "work/source.mp4")
+
+    w, h = get_video_resolution("work/source.mp4")
+    print(f"Resolusi final video sumber: {w}x{h}")
 
     run_cmd([
         "ffmpeg", "-y", "-i", "work/source.mp4",
@@ -158,42 +204,138 @@ Transkrip:
 
     raise RuntimeError(f"Semua kandidat model Gemini gagal diakses. Error terakhir: {last_error}")
 
-def detect_speaker_crop_x(video_path, start_s, end_s):
+def load_face_detector():
+    xml_paths = ["haarcascade_frontalface_default.xml"]
+    if hasattr(cv2, "data") and hasattr(cv2.data, "haarcascades"):
+        xml_paths.append(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+    for path in xml_paths:
+        if os.path.exists(path):
+            detector = cv2.CascadeClassifier(path)
+            if not detector.empty():
+                return detector
+    return None
+
+def detect_active_speaker_expression(video_path, start_s, end_s):
     cap = cv2.VideoCapture(video_path)
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     crop_w = int(height * 9 / 16)
+    duration = end_s - start_s
 
     if crop_w >= width:
         cap.release()
-        return 0, width, width, height
+        return "0", width, width, height
 
-    centers_x = []
-    try:
-        if hasattr(cv2, "CascadeClassifier") and hasattr(cv2, "data"):
-            face_cascade = cv2.CascadeClassifier(
-                cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-            )
-            t = start_s
-            while t < end_s:
-                cap.set(cv2.CAP_PROP_POS_FRAMES, int(t * fps))
-                ret, frame = cap.read()
-                if not ret:
-                    break
-                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                faces = face_cascade.detectMultiScale(gray, scaleFactor=1.15, minNeighbors=5, minSize=(60, 60))
-                if len(faces) > 0:
-                    x, y, w, h = max(faces, key=lambda f: f[2] * f[3])
-                    centers_x.append(x + w // 2)
-                t += 0.7
-    except Exception as e:
-        print(f"Deteksi wajah dilewati ({e}), memakai posisi tengah otomatis.")
+    detector = load_face_detector()
+    if detector is None:
+        cap.release()
+        return f"{(width - crop_w) // 2}", crop_w, width, height
+
+    step = 0.4
+    samples = []
+    last_center = width // 2
+    t = start_s
+
+    while t < end_s:
+        frame_idx = int(t * fps)
+        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+        ret1, frame1 = cap.read()
+        if not ret1:
+            break
+
+        for _ in range(3):
+            ret2, frame2 = cap.read()
+            if not ret2:
+                frame2 = frame1
+                break
+
+        gray1 = cv2.cvtColor(frame1, cv2.COLOR_BGR2GRAY)
+        gray2 = cv2.cvtColor(frame2, cv2.COLOR_BGR2GRAY)
+
+        min_face = max(48, int(height * 0.09))
+        raw_faces = detector.detectMultiScale(
+            gray1, scaleFactor=1.12, minNeighbors=6, minSize=(min_face, min_face)
+        )
+
+        # Abaikan objek di bagian bawah layar (< 65% tinggi frame) agar tidak menangkap monitor/meja
+        faces = [
+            (x, y, w, h) for (x, y, w, h) in raw_faces
+            if (y + h * 0.5) < (height * 0.65)
+        ]
+
+        if len(faces) == 1:
+            x, y, w, h = faces[0]
+            last_center = x + w // 2
+        elif len(faces) >= 2:
+            best_score = -1.0
+            chosen_center = last_center
+            for (x, y, w, h) in faces:
+                m_y1 = y + int(h * 0.55)
+                m_y2 = min(height, y + h)
+                m_x1 = x + int(w * 0.20)
+                m_x2 = min(width, x + int(w * 0.80))
+                if m_y2 > m_y1 and m_x2 > m_x1:
+                    roi1 = gray1[m_y1:m_y2, m_x1:m_x2]
+                    roi2 = gray2[m_y1:m_y2, m_x1:m_x2]
+                    motion = float(np.mean(cv2.absdiff(roi1, roi2)))
+                else:
+                    motion = 0.0
+                score = motion * (w * h) ** 0.25
+                if score > best_score:
+                    best_score = score
+                    chosen_center = x + w // 2
+            last_center = chosen_center
+
+        crop_x = max(0, min(width - crop_w, last_center - crop_w // 2))
+        samples.append((round(t - start_s, 2), int(crop_x)))
+        t += step
 
     cap.release()
-    target_x = int(np.median(centers_x)) if centers_x else (width // 2)
-    crop_x = max(0, min(width - crop_w, target_x - crop_w // 2))
-    return crop_x, crop_w, width, height
+
+    if not samples:
+        return f"{(width - crop_w) // 2}", crop_w, width, height
+
+    segments = []
+    cur_start = 0.0
+    cur_x = samples[0][1]
+    pending_x = None
+    pending_count = 0
+    threshold = int(crop_w * 0.25)
+
+    for rel_t, sx in samples[1:]:
+        if abs(sx - cur_x) > threshold:
+            if pending_x is not None and abs(sx - pending_x) <= threshold:
+                pending_count += 1
+            else:
+                pending_x = sx
+                pending_count = 1
+
+            if pending_count >= 3:
+                switch_t = max(cur_start + 0.5, round(rel_t - (step * 2), 2))
+                segments.append((cur_start, switch_t, cur_x))
+                cur_start = switch_t
+                cur_x = pending_x
+                pending_x = None
+                pending_count = 0
+        else:
+            cur_x = int(0.7 * cur_x + 0.3 * sx)
+            pending_x = None
+            pending_count = 0
+
+    segments.append((cur_start, round(duration + 0.5, 2), cur_x))
+    print(f"Pergerakan kamera terdeteksi ({len(segments)} segmen fokus pembicara).")
+
+    if len(segments) == 1:
+        x_expr = str(segments[0][2])
+    else:
+        terms = []
+        for idx, (s_t, e_t, x_val) in enumerate(segments):
+            op = "lte" if idx == len(segments) - 1 else "lt"
+            terms.append(f"gte(t,{s_t:.2f})*{op}(t,{e_t:.2f})*{x_val}")
+        x_expr = "+".join(terms)
+
+    return x_expr, crop_w, width, height
 
 def format_ass_time(seconds):
     h = int(seconds // 3600)
@@ -234,7 +376,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         f.write(header + "\n".join(events))
 
 def render_clips(clips, transcript_data):
-    print("4. Merender klip vertikal 9:16 + subtitle...")
+    print("4. Merender klip vertikal 9:16 Full HD + penajam gambar...")
     words = transcript_data.get("words", [])
     results_meta = []
 
@@ -245,24 +387,24 @@ def render_clips(clips, transcript_data):
         out_mp4 = f"output/klip_{idx}.mp4"
         ass_file = f"work/sub_{idx}.ass"
 
-        crop_x, crop_w, _, height = detect_speaker_crop_x("work/source.mp4", start_s, end_s)
+        x_expr, crop_w, _, height = detect_active_speaker_expression("work/source.mp4", start_s, end_s)
         build_ass_subtitle(words, start_s, end_s, clip["hook_title"], ass_file)
 
-        vf = f"crop={crop_w}:{height}:{crop_x}:0,scale=1080:1920,ass={ass_file}"
+        vf = f"crop={crop_w}:{height}:'{x_expr}':0,scale=1080:1920:flags=lanczos,unsharp=5:5:0.7:3:3:0.3,ass={ass_file}"
         run_cmd([
             "ffmpeg", "-y",
             "-ss", str(start_s),
             "-i", "work/source.mp4",
             "-t", str(duration),
             "-vf", vf,
-            "-c:v", "libx264", "-preset", "fast", "-crf", "22",
-            "-c:a", "aac", "-b:a", "128k",
+            "-c:v", "libx264", "-preset", "fast", "-crf", "17", "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "192k",
             out_mp4
         ])
 
         clip["file"] = out_mp4
         results_meta.append(clip)
-        print(f"Selesai merender: {out_mp4}")
+        print(f"Selesai merender HD: {out_mp4}")
 
     with open("output/hasil_kurasi.json", "w", encoding="utf-8") as f:
         json.dump(results_meta, f, ensure_ascii=False, indent=2)
