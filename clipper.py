@@ -63,24 +63,39 @@ def transcribe_audio():
         json.dump(data, out, ensure_ascii=False, indent=2)
     return data
 
-def get_active_gemini_model():
+def get_candidate_gemini_models():
     res = requests.get(
         f"https://generativelanguage.googleapis.com/v1beta/models?key={GEMINI_API_KEY}",
         timeout=30
     )
     res.raise_for_status()
-    excluded = ["embedding", "aqa", "imagen", "veo", "tts", "audio", "image", "robotics", "computer-use", "customtools"]
+    excluded = [
+        "embedding", "aqa", "imagen", "veo", "tts", "audio",
+        "image", "robotics", "computer-use", "customtools",
+        "omni", "deep-research"
+    ]
     available = [
         m["name"] for m in res.json().get("models", [])
         if "generateContent" in m.get("supportedGenerationMethods", [])
         and "gemini" in m["name"].lower()
         and not any(x in m["name"].lower() for x in excluded)
     ]
-    flash_main = sorted([m for m in available if "flash" in m.lower() and "lite" not in m.lower()], reverse=True)
-    flash_any = sorted([m for m in available if "flash" in m.lower()], reverse=True)
-    chosen = (flash_main or flash_any or sorted(available, reverse=True))[0]
-    print(f"Menggunakan model Gemini: {chosen}")
-    return chosen
+
+    stable_flash = sorted(
+        [m for m in available if "flash" in m.lower() and "preview" not in m.lower() and "exp" not in m.lower()],
+        reverse=True
+    )
+    preview_flash = sorted(
+        [m for m in available if "flash" in m.lower() and m not in stable_flash],
+        reverse=True
+    )
+    others = sorted([m for m in available if m not in stable_flash and m not in preview_flash], reverse=True)
+
+    ordered = []
+    for m in stable_flash + preview_flash + others:
+        if m not in ordered:
+            ordered.append(m)
+    return ordered[:6]
 
 def curate_viral_clips(transcript_data):
     print("3. Menganalisis momen paling viral dengan Gemini AI...")
@@ -116,21 +131,31 @@ Keluarkan HANYA JSON valid dengan struktur:
 Transkrip:
 {compact_transcript[:95000]}
 """
-    model_name = get_active_gemini_model()
-    url = f"https://generativelanguage.googleapis.com/v1beta/{model_name}:generateContent?key={GEMINI_API_KEY}"
-    res = requests.post(
-        url,
-        json={
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"responseMimeType": "application/json", "temperature": 0.4}
-        },
-        timeout=120
-    )
-    res.raise_for_status()
-    raw_text = res.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
-    if raw_text.startswith("```"):
-        raw_text = raw_text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-    return json.loads(raw_text)["clips"]
+    candidates = get_candidate_gemini_models()
+    last_error = None
+
+    for model_name in candidates:
+        print(f"Mencoba model Gemini: {model_name}")
+        url = f"https://generativelanguage.googleapis.com/v1beta/{model_name}:generateContent?key={GEMINI_API_KEY}"
+        res = requests.post(
+            url,
+            json={
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {"responseMimeType": "application/json", "temperature": 0.4}
+            },
+            timeout=120
+        )
+        if res.status_code in (404, 429, 503):
+            print(f"Model {model_name} dilewati (status {res.status_code}), lanjut ke cadangan...")
+            last_error = f"{res.status_code}: {res.text[:200]}"
+            continue
+        res.raise_for_status()
+        raw_text = res.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+        if raw_text.startswith("```"):
+            raw_text = raw_text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+        return json.loads(raw_text)["clips"]
+
+    raise RuntimeError(f"Semua kandidat model Gemini gagal diakses. Error terakhir: {last_error}")
 
 def detect_speaker_crop_x(video_path, start_s, end_s):
     cap = cv2.VideoCapture(video_path)
