@@ -8,7 +8,7 @@ import numpy as np
 
 GROQ_API_KEY = os.environ["GROQ_API_KEY"]
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
-VIDEO_URL = os.environ["VIDEO_URL"]
+VIDEO_URL = os.environ["VIDEO_URL"].strip()
 NUM_CLIPS = int(os.environ.get("NUM_CLIPS", "3"))
 
 os.makedirs("work", exist_ok=True)
@@ -19,16 +19,20 @@ def run_cmd(cmd):
 
 def download_video():
     print("1. Mengunduh video sumber...")
-    cmd = [
-        "yt-dlp",
-        "-f", "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-        "--merge-output-format", "mp4",
-        "-o", "work/source.mp4",
-        VIDEO_URL
-    ]
-    if os.path.exists("cookies.txt"):
-        cmd.extend(["--cookies", "cookies.txt"])
-    run_cmd(cmd)
+    if "drive.google.com" in VIDEO_URL:
+        run_cmd(["gdown", "--fuzzy", VIDEO_URL, "-O", "work/source.mp4"])
+    else:
+        cmd = [
+            "yt-dlp",
+            "--remote-components", "ejs:github",
+            "-f", "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+            "--merge-output-format", "mp4",
+            "-o", "work/source.mp4",
+            VIDEO_URL
+        ]
+        if os.path.exists("cookies.txt"):
+            cmd.extend(["--cookies", "cookies.txt"])
+        run_cmd(cmd)
 
     run_cmd([
         "ffmpeg", "-y", "-i", "work/source.mp4",
