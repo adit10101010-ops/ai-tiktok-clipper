@@ -1,0 +1,54 @@
+name: AI TikTok Auto Clipper
+
+on:
+  workflow_dispatch:
+    inputs:
+      video_url:
+        description: "Link YouTube atau Google Drive"
+        required: true
+      num_clips:
+        description: "Jumlah klip yang dihasilkan"
+        required: false
+        default: "3"
+  repository_dispatch:
+    types: [run-clipper]
+
+jobs:
+  process-video:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update && sudo apt-get install -y ffmpeg fonts-dejavu-core
+          pip install -r requirements.txt
+
+      - name: Prepare YouTube cookies if available
+        env:
+          YT_COOKIES: ${{ secrets.YT_COOKIES }}
+        run: |
+          if [ -n "$YT_COOKIES" ]; then
+            echo "$YT_COOKIES" > cookies.txt
+          fi
+
+      - name: Run AI Clipper
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          VIDEO_URL: ${{ github.event.inputs.video_url || github.event.client_payload.video_url }}
+          NUM_CLIPS: ${{ github.event.inputs.num_clips || github.event.client_payload.num_clips || '3' }}
+        run: python clipper.py
+
+      - name: Upload Hasil Klip & Caption
+        uses: actions/upload-artifact@v4
+        with:
+          name: hasil-klip-tiktok-${{ github.run_number }}
+          path: output/
+          retention-days: 7
