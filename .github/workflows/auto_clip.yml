@@ -31,8 +31,8 @@ jobs:
           curl -fsSL https://deno.land/install.sh | sh
           echo "$HOME/.deno/bin" >> $GITHUB_PATH
           pip uninstall -y opencv-python opencv-contrib-python opencv-python-headless || true
-          pip install -U -r requirements.txt opencv-python-headless gdown
-          curl -fsSL https://raw.githubusercontent.com/opencv/opencv/master/data/haarcascades/haarcascade_frontalface_default.xml -o haarcascade_frontalface_default.xml
+          pip install -U -r requirements.txt opencv-python-headless gdown pillow
+          curl -fsSL https://raw.githubusercontent.com/google/fonts/main/ofl/poppins/Poppins-ExtraBold.ttf -o Poppins-ExtraBold.ttf || true
 
       - name: Prepare YouTube cookies if available
         env:
