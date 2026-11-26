@@ -22,13 +22,15 @@ def download_video():
     if "drive.google.com" in VIDEO_URL:
         run_cmd(["gdown", "--fuzzy", VIDEO_URL, "-O", "work/source.mp4"])
     else:
+        clean_url = VIDEO_URL.split("?si=")[0].split("&si=")[0]
         cmd = [
             "yt-dlp",
             "--remote-components", "ejs:github",
+            "--extractor-args", "youtube:player_client=web,mweb,tv",
             "-f", "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
             "--merge-output-format", "mp4",
             "-o", "work/source.mp4",
-            VIDEO_URL
+            clean_url
         ]
         if os.path.exists("cookies.txt"):
             cmd.extend(["--cookies", "cookies.txt"])
@@ -60,6 +62,25 @@ def transcribe_audio():
     with open("work/transcript.json", "w", encoding="utf-8") as out:
         json.dump(data, out, ensure_ascii=False, indent=2)
     return data
+
+def get_active_gemini_model():
+    res = requests.get(
+        f"https://generativelanguage.googleapis.com/v1beta/models?key={GEMINI_API_KEY}",
+        timeout=30
+    )
+    res.raise_for_status()
+    excluded = ["embedding", "aqa", "imagen", "veo", "tts", "audio", "image", "robotics", "computer-use", "customtools"]
+    available = [
+        m["name"] for m in res.json().get("models", [])
+        if "generateContent" in m.get("supportedGenerationMethods", [])
+        and "gemini" in m["name"].lower()
+        and not any(x in m["name"].lower() for x in excluded)
+    ]
+    flash_main = sorted([m for m in available if "flash" in m.lower() and "lite" not in m.lower()], reverse=True)
+    flash_any = sorted([m for m in available if "flash" in m.lower()], reverse=True)
+    chosen = (flash_main or flash_any or sorted(available, reverse=True))[0]
+    print(f"Menggunakan model Gemini: {chosen}")
+    return chosen
 
 def curate_viral_clips(transcript_data):
     print("3. Menganalisis momen paling viral dengan Gemini AI...")
@@ -95,7 +116,8 @@ Keluarkan HANYA JSON valid dengan struktur:
 Transkrip:
 {compact_transcript[:95000]}
 """
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+    model_name = get_active_gemini_model()
+    url = f"https://generativelanguage.googleapis.com/v1beta/{model_name}:generateContent?key={GEMINI_API_KEY}"
     res = requests.post(
         url,
         json={
@@ -105,7 +127,9 @@ Transkrip:
         timeout=120
     )
     res.raise_for_status()
-    raw_text = res.json()["candidates"][0]["content"]["parts"][0]["text"]
+    raw_text = res.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+    if raw_text.startswith("```"):
+        raw_text = raw_text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
     return json.loads(raw_text)["clips"]
 
 def detect_speaker_crop_x(video_path, start_s, end_s):
