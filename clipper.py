@@ -12,6 +12,7 @@ GROQ_API_KEY = os.environ["GROQ_API_KEY"]
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 VIDEO_URL = os.environ["VIDEO_URL"].strip()
 NUM_CLIPS = int(os.environ.get("NUM_CLIPS", "3"))
+CLIP_DURATION = os.environ.get("CLIP_DURATION", "60-90 detik").strip()
 
 os.makedirs("work", exist_ok=True)
 os.makedirs("output", exist_ok=True)
@@ -143,7 +144,7 @@ def get_candidate_gemini_models():
     return ordered[:6]
 
 def curate_viral_clips(transcript_data):
-    print("3. Menganalisis momen paling viral & merancang hook dengan Gemini AI...")
+    print(f"3. Menganalisis momen paling viral (target {CLIP_DURATION}) dengan Gemini AI...")
     segments = transcript_data.get("segments", [])
     compact_transcript = "\n".join(
         [f"[{s['start']:.1f}s - {s['end']:.1f}s] {s['text'].strip()}" for s in segments]
@@ -154,7 +155,7 @@ Kamu adalah creative director & editor viral TikTok Indonesia (niche podcast, mi
 Analisis transkrip video berikut dan pilih {NUM_CLIPS} potongan paling berpotensi FYP (kontroversial, tamparan realitas, fakta mengejutkan, atau perdebatan tajam).
 
 Aturan ketat:
-1. Durasi tiap klip wajib antara 30 sampai 60 detik, dimulai tepat pada kalimat pembuka yang kuat dan ditutup tuntas.
+1. Durasi tiap klip wajib berada di kisaran {CLIP_DURATION}, dimulai tepat pada kalimat pembuka yang kuat dan ditutup tuntas pada akhir argumen/pembahasan.
 2. 'hook_badge': label kategori singkat 2 KATA HURUF KAPITAL (contoh: "TAMPARAN KERAS", "FAKTA TERSEMBUNYI", "WAJIB TAHU", "MINDSET MAHAL").
 3. 'hook_title': judul pemicu rasa penasaran/emosi 5 sampai 8 KATA HURUF KAPITAL. Hindari kalimat datar/klise; gunakan pola kontras atau pertanyaan menohok (contoh: "PANTAS HIDUPMU STAGNAN TERUS KALAU CIRCLE-NYA BEGINI").
 4. 'highlight_words': daftar 2 sampai 3 kata kunci paling kuat dari 'hook_title' (HURUF KAPITAL persis seperti di hook_title) untuk diwarnai kuning neon.
@@ -165,7 +166,7 @@ Keluarkan HANYA JSON valid dengan struktur:
   "clips": [
     {{
       "start": 120.5,
-      "end": 165.0,
+      "end": 205.0,
       "viral_score": 94,
       "hook_badge": "TAMPARAN KERAS",
       "hook_title": "PANTAS HIDUPMU STAGNAN TERUS KALAU CIRCLE-NYA BEGINI",
@@ -262,13 +263,11 @@ def create_hook_banner_png(hook_title, hook_badge, highlight_words, out_png_path
     card_x2 = card_x1 + card_w
     card_y2 = card_y1 + card_h
 
-    # Bayangan lembut di belakang kartu
     draw.rounded_rectangle(
         [card_x1 + 5, card_y1 + 8, card_x2 + 5, card_y2 + 8],
         radius=24,
         fill=(0, 0, 0, 175)
     )
-    # Kartu utama gelap elegan dengan garis tepi kuning cerah
     draw.rounded_rectangle(
         [card_x1, card_y1, card_x2, card_y2],
         radius=24,
@@ -277,7 +276,6 @@ def create_hook_banner_png(hook_title, hook_badge, highlight_words, out_png_path
         width=4
     )
 
-    # Kapsul badge merah di bagian atas kartu
     b_bbox = draw.textbbox((0, 0), badge_text, font=font_badge)
     b_w = (b_bbox[2] - b_bbox[0]) + 42
     b_h = 40
@@ -295,7 +293,6 @@ def create_hook_banner_png(hook_title, hook_badge, highlight_words, out_png_path
         fill=(255, 255, 255, 255)
     )
 
-    # Render judul rata tengah dengan sorotan warna kuning pada kata kunci
     curr_y = card_y1 + box_pad_y + 10
     for line in lines:
         words = line.split(" ")
@@ -555,7 +552,7 @@ def render_clips(clips, transcript_data):
 
         clip["file"] = out_mp4
         results_meta.append(clip)
-        print(f"Selesai merender HD dengan desain baru: {out_mp4}")
+        print(f"Selesai merender HD ({duration:.1f} detik): {out_mp4}")
 
     with open("output/hasil_kurasi.json", "w", encoding="utf-8") as f:
         json.dump(results_meta, f, ensure_ascii=False, indent=2)
