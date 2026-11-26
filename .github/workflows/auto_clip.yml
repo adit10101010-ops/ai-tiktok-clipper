@@ -27,10 +27,12 @@ jobs:
 
       - name: Install dependencies & Deno
         run: |
-          sudo apt-get update && sudo apt-get install -y ffmpeg fonts-dejavu-core unzip
+          sudo apt-get update && sudo apt-get install -y ffmpeg fonts-dejavu-core unzip curl
           curl -fsSL https://deno.land/install.sh | sh
           echo "$HOME/.deno/bin" >> $GITHUB_PATH
-          pip install -U -r requirements.txt gdown
+          pip uninstall -y opencv-python opencv-contrib-python opencv-python-headless || true
+          pip install -U -r requirements.txt opencv-python-headless gdown
+          curl -fsSL https://raw.githubusercontent.com/opencv/opencv/master/data/haarcascades/haarcascade_frontalface_default.xml -o haarcascade_frontalface_default.xml
 
       - name: Prepare YouTube cookies if available
         env:
