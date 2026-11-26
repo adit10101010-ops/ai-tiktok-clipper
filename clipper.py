@@ -153,7 +153,8 @@ Transkrip:
         raw_text = res.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
         if raw_text.startswith("```"):
             raw_text = raw_text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-        return json.loads(raw_text)["clips"]
+        parsed = json.loads(raw_text)
+        return parsed if isinstance(parsed, list) else parsed["clips"]
 
     raise RuntimeError(f"Semua kandidat model Gemini gagal diakses. Error terakhir: {last_error}")
 
@@ -168,22 +169,26 @@ def detect_speaker_crop_x(video_path, start_s, end_s):
         cap.release()
         return 0, width, width, height
 
-    face_cascade = cv2.CascadeClassifier(
-        cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-    )
     centers_x = []
-    t = start_s
-    while t < end_s:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, int(t * fps))
-        ret, frame = cap.read()
-        if not ret:
-            break
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        faces = face_cascade.detectMultiScale(gray, scaleFactor=1.15, minNeighbors=5, minSize=(60, 60))
-        if len(faces) > 0:
-            x, y, w, h = max(faces, key=lambda f: f[2] * f[3])
-            centers_x.append(x + w // 2)
-        t += 0.7
+    try:
+        if hasattr(cv2, "CascadeClassifier") and hasattr(cv2, "data"):
+            face_cascade = cv2.CascadeClassifier(
+                cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+            )
+            t = start_s
+            while t < end_s:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, int(t * fps))
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                faces = face_cascade.detectMultiScale(gray, scaleFactor=1.15, minNeighbors=5, minSize=(60, 60))
+                if len(faces) > 0:
+                    x, y, w, h = max(faces, key=lambda f: f[2] * f[3])
+                    centers_x.append(x + w // 2)
+                t += 0.7
+    except Exception as e:
+        print(f"Deteksi wajah dilewati ({e}), memakai posisi tengah otomatis.")
 
     cap.release()
     target_x = int(np.median(centers_x)) if centers_x else (width // 2)
