@@ -25,10 +25,12 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install dependencies
+      - name: Install dependencies & Deno
         run: |
-          sudo apt-get update && sudo apt-get install -y ffmpeg fonts-dejavu-core
-          pip install -r requirements.txt
+          sudo apt-get update && sudo apt-get install -y ffmpeg fonts-dejavu-core unzip
+          curl -fsSL https://deno.land/install.sh | sh
+          echo "$HOME/.deno/bin" >> $GITHUB_PATH
+          pip install -U -r requirements.txt gdown
 
       - name: Prepare YouTube cookies if available
         env:
