@@ -1,0 +1,4 @@
+requests
+yt-dlp
+opencv-python-headless
+numpy
