@@ -10,6 +10,10 @@ on:
         description: "Jumlah klip yang dihasilkan"
         required: false
         default: "3"
+      clip_duration:
+        description: "Target durasi per klip"
+        required: false
+        default: "60-90 detik"
   repository_dispatch:
     types: [run-clipper]
 
@@ -48,6 +52,7 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           VIDEO_URL: ${{ github.event.inputs.video_url || github.event.client_payload.video_url }}
           NUM_CLIPS: ${{ github.event.inputs.num_clips || github.event.client_payload.num_clips || '3' }}
+          CLIP_DURATION: ${{ github.event.inputs.clip_duration || github.event.client_payload.clip_duration || '60-90 detik' }}
         run: python clipper.py
 
       - name: Upload Hasil Klip & Caption
