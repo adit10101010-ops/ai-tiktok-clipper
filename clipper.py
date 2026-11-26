@@ -6,6 +6,7 @@ import subprocess
 import requests
 import cv2
 import numpy as np
+from PIL import Image, ImageDraw, ImageFont
 
 GROQ_API_KEY = os.environ["GROQ_API_KEY"]
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
@@ -142,21 +143,22 @@ def get_candidate_gemini_models():
     return ordered[:6]
 
 def curate_viral_clips(transcript_data):
-    print("3. Menganalisis momen paling viral dengan Gemini AI...")
+    print("3. Menganalisis momen paling viral & merancang hook dengan Gemini AI...")
     segments = transcript_data.get("segments", [])
     compact_transcript = "\n".join(
         [f"[{s['start']:.1f}s - {s['end']:.1f}s] {s['text'].strip()}" for s in segments]
     )
 
     prompt = f"""
-Kamu adalah editor dan ahli strategi viral TikTok Indonesia untuk niche podcast, berita, dan perkembangan negara.
-Analisis transkrip video berikut dan pilih {NUM_CLIPS} potongan paling berpotensi FYP (kontroversial, emosional, fakta mengejutkan, atau perdebatan tajam).
+Kamu adalah creative director & editor viral TikTok Indonesia (niche podcast, mindset, bisnis, berita).
+Analisis transkrip video berikut dan pilih {NUM_CLIPS} potongan paling berpotensi FYP (kontroversial, tamparan realitas, fakta mengejutkan, atau perdebatan tajam).
 
 Aturan ketat:
-1. Durasi tiap klip wajib antara 30 sampai 60 detik.
-2. Potongan harus dimulai tepat di awal kalimat yang memancing rasa penasaran (strong hook) dan berakhir di kalimat penutup yang tuntas.
-3. Buat 'hook_title' maksimal 6 kata huruf kapital untuk dipasang di bagian atas layar video.
-4. Buat 'caption' TikTok yang memancing komentar beserta 5 hashtag relevan.
+1. Durasi tiap klip wajib antara 30 sampai 60 detik, dimulai tepat pada kalimat pembuka yang kuat dan ditutup tuntas.
+2. 'hook_badge': label kategori singkat 2 KATA HURUF KAPITAL (contoh: "TAMPARAN KERAS", "FAKTA TERSEMBUNYI", "WAJIB TAHU", "MINDSET MAHAL").
+3. 'hook_title': judul pemicu rasa penasaran/emosi 5 sampai 8 KATA HURUF KAPITAL. Hindari kalimat datar/klise; gunakan pola kontras atau pertanyaan menohok (contoh: "PANTAS HIDUPMU STAGNAN TERUS KALAU CIRCLE-NYA BEGINI").
+4. 'highlight_words': daftar 2 sampai 3 kata kunci paling kuat dari 'hook_title' (HURUF KAPITAL persis seperti di hook_title) untuk diwarnai kuning neon.
+5. 'caption': caption TikTok yang memancing komentar + 5 hashtag relevan.
 
 Keluarkan HANYA JSON valid dengan struktur:
 {{
@@ -164,9 +166,11 @@ Keluarkan HANYA JSON valid dengan struktur:
     {{
       "start": 120.5,
       "end": 165.0,
-      "viral_score": 92,
-      "hook_title": "FAKTA MENGEJUTKAN DI BALIK KEBIJAKAN INI",
-      "caption": "Setuju atau nggak sama pernyataan ini? Tulis pendapat kalian di bawah! #podcastindonesia #beritaterkini #fyp",
+      "viral_score": 94,
+      "hook_badge": "TAMPARAN KERAS",
+      "hook_title": "PANTAS HIDUPMU STAGNAN TERUS KALAU CIRCLE-NYA BEGINI",
+      "highlight_words": ["STAGNAN", "TERUS", "CIRCLE-NYA"],
+      "caption": "Setuju atau nggak sama pernyataan ini? Tulis pendapat kalian di bawah! #podcastindonesia #mindset #fyp",
       "reason": "Alasan singkat kenapa segmen ini berpotensi viral"
     }}
   ]
@@ -185,7 +189,7 @@ Transkrip:
             url,
             json={
                 "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {"responseMimeType": "application/json", "temperature": 0.4}
+                "generationConfig": {"responseMimeType": "application/json", "temperature": 0.5}
             },
             timeout=120
         )
@@ -201,6 +205,116 @@ Transkrip:
         return parsed if isinstance(parsed, list) else parsed["clips"]
 
     raise RuntimeError(f"Semua kandidat model Gemini gagal diakses. Error terakhir: {last_error}")
+
+def get_bold_font_path():
+    candidates = [
+        "Poppins-ExtraBold.ttf",
+        "work/Poppins-ExtraBold.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+    ]
+    for p in candidates:
+        if os.path.exists(p) and os.path.getsize(p) > 10000:
+            return p
+    try:
+        r = requests.get(
+            "https://raw.githubusercontent.com/google/fonts/main/ofl/poppins/Poppins-ExtraBold.ttf",
+            timeout=20
+        )
+        if r.ok and len(r.content) > 10000:
+            with open("work/Poppins-ExtraBold.ttf", "wb") as f:
+                f.write(r.content)
+            return "work/Poppins-ExtraBold.ttf"
+    except Exception:
+        pass
+    return "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+
+def create_hook_banner_png(hook_title, hook_badge, highlight_words, out_png_path):
+    W, H = 1080, 390
+    img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+
+    font_path = get_bold_font_path()
+    try:
+        font_badge = ImageFont.truetype(font_path, 24)
+        font_title = ImageFont.truetype(font_path, 44)
+    except Exception:
+        font_badge = ImageFont.load_default()
+        font_title = ImageFont.load_default()
+
+    badge_text = (hook_badge or "PODCAST HIGHLIGHT").upper().strip()
+    title_text = (hook_title or "").upper().strip()
+    hl_set = {w.upper().strip(".,!?\"'") for w in (highlight_words or [])}
+
+    lines = textwrap.wrap(title_text, width=25)[:3] or ["SIMAK PENJELASAN INI"]
+    line_height = 56
+    box_pad_x = 40
+    box_pad_y = 26
+
+    max_w = 0
+    for line in lines:
+        bbox = draw.textbbox((0, 0), line, font=font_title)
+        max_w = max(max_w, bbox[2] - bbox[0])
+
+    card_w = min(W - 96, max(520, max_w + box_pad_x * 2))
+    card_h = len(lines) * line_height + box_pad_y * 2 + 8
+    card_x1 = (W - card_w) // 2
+    card_y1 = 44
+    card_x2 = card_x1 + card_w
+    card_y2 = card_y1 + card_h
+
+    # Bayangan lembut di belakang kartu
+    draw.rounded_rectangle(
+        [card_x1 + 5, card_y1 + 8, card_x2 + 5, card_y2 + 8],
+        radius=24,
+        fill=(0, 0, 0, 175)
+    )
+    # Kartu utama gelap elegan dengan garis tepi kuning cerah
+    draw.rounded_rectangle(
+        [card_x1, card_y1, card_x2, card_y2],
+        radius=24,
+        fill=(11, 17, 32, 232),
+        outline=(250, 204, 21, 255),
+        width=4
+    )
+
+    # Kapsul badge merah di bagian atas kartu
+    b_bbox = draw.textbbox((0, 0), badge_text, font=font_badge)
+    b_w = (b_bbox[2] - b_bbox[0]) + 42
+    b_h = 40
+    b_x1 = (W - b_w) // 2
+    b_y1 = card_y1 - 20
+    draw.rounded_rectangle(
+        [b_x1, b_y1, b_x1 + b_w, b_y1 + b_h],
+        radius=20,
+        fill=(220, 38, 38, 255)
+    )
+    draw.text(
+        (b_x1 + 21, b_y1 + 6),
+        badge_text,
+        font=font_badge,
+        fill=(255, 255, 255, 255)
+    )
+
+    # Render judul rata tengah dengan sorotan warna kuning pada kata kunci
+    curr_y = card_y1 + box_pad_y + 10
+    for line in lines:
+        words = line.split(" ")
+        space_w = draw.textbbox((0, 0), " ", font=font_title)[2]
+        word_widths = [draw.textbbox((0, 0), w, font=font_title)[2] for w in words]
+        total_line_w = sum(word_widths) + space_w * (len(words) - 1)
+        curr_x = (W - total_line_w) // 2
+
+        for w, w_width in zip(words, word_widths):
+            clean_w = w.strip(".,!?\"'")
+            is_hl = clean_w in hl_set
+            color = (250, 204, 21, 255) if is_hl else (255, 255, 255, 255)
+            draw.text((curr_x + 2, curr_y + 2), w, font=font_title, fill=(0, 0, 0, 220))
+            draw.text((curr_x, curr_y), w, font=font_title, fill=color)
+            curr_x += w_width + space_w
+        curr_y += line_height
+
+    img.save(out_png_path)
+    return out_png_path
 
 def load_dnn_face_detector():
     if not hasattr(cv2, "dnn"):
@@ -241,7 +355,6 @@ def detect_faces_dnn(net, frame, width, height):
         x2, y2 = min(width, x2), min(height, y2)
         w, h = x2 - x1, y2 - y1
         center_y = y1 + h * 0.5
-        # Pastikan ukuran wajah wajar dan berada di area atas/tengah (bukan meja/logo)
         if w > width * 0.03 and h > height * 0.06 and (height * 0.06) < center_y < (height * 0.68):
             faces.append((x1, y1, w, h))
     return faces
@@ -305,7 +418,6 @@ def detect_active_speaker_expression(video_path, start_s, end_s):
                     chosen_center = x + w // 2
             last_center = chosen_center
         else:
-            # Cadangan murni NumPy/OpenCV: lacak puncak gerak area kepala/bahu (10% - 62% tinggi frame)
             y_top, y_bot = int(height * 0.10), int(height * 0.62)
             diff_roi = cv2.absdiff(gray1[y_top:y_bot, :], gray2[y_top:y_bot, :])
             col_profile = np.mean(diff_roi, axis=0)
@@ -370,7 +482,7 @@ def format_ass_time(seconds):
     s = seconds % 60
     return f"{h}:{m:02d}:{s:05.2f}"
 
-def build_ass_subtitle(words, start_s, end_s, hook_title, ass_path):
+def build_ass_subtitle(words, start_s, end_s, ass_path):
     header = """[Script Info]
 ScriptType: v4.00+
 PlayResX: 1080
@@ -378,15 +490,13 @@ PlayResY: 1920
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Hook,DejaVu Sans,54,&H00FFFFFF,&H000000FF,&H00000000,&HCC000000,-1,0,0,0,100,100,0,0,3,14,0,8,60,60,180,1
-Style: Sub,DejaVu Sans,68,&H0000FFFF,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,6,2,2,70,70,430,1
+Style: Sub,Poppins ExtraBold,66,&H0000FFFF,&H00FFFFFF,&H00000000,&H99000000,-1,0,0,0,100,100,0,0,1,7,3,2,70,70,410,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
     duration = end_s - start_s
-    wrapped_hook = r"\N".join(textwrap.wrap(hook_title.upper(), width=24))
-    events = [f"Dialogue: 1,0:00:00.00,{format_ass_time(duration)},Hook,,0,0,0,,{wrapped_hook}"]
+    events = []
 
     clip_words = [w for w in words if w["end"] >= start_s and w["start"] <= end_s]
     chunk_size = 3
@@ -403,7 +513,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         f.write(header + "\n".join(events))
 
 def render_clips(clips, transcript_data):
-    print("4. Merender klip vertikal 9:16 Full HD + penajam gambar...")
+    print("4. Merender klip vertikal 9:16 Full HD + kartu judul modern...")
     words = transcript_data.get("words", [])
     results_meta = []
 
@@ -413,11 +523,25 @@ def render_clips(clips, transcript_data):
         duration = end_s - start_s
         out_mp4 = f"output/klip_{idx}.mp4"
         ass_file = f"work/sub_{idx}.ass"
+        banner_png = f"work/banner_{idx}.png"
 
         x_expr, crop_w, _, height = detect_active_speaker_expression("work/source.mp4", start_s, end_s)
-        build_ass_subtitle(words, start_s, end_s, clip["hook_title"], ass_file)
+        build_ass_subtitle(words, start_s, end_s, ass_file)
+        create_hook_banner_png(
+            clip.get("hook_title", ""),
+            clip.get("hook_badge", "PODCAST HIGHLIGHT"),
+            clip.get("highlight_words", []),
+            banner_png
+        )
 
-        vf = f"crop={crop_w}:{height}:'{x_expr}':0,scale=1080:1920:flags=lanczos,unsharp=5:5:0.7:3:3:0.3,ass={ass_file}"
+        vf = (
+            f"crop={crop_w}:{height}:'{x_expr}':0,"
+            f"scale=1080:1920:flags=lanczos,"
+            f"unsharp=5:5:0.7:3:3:0.3,"
+            f"ass={ass_file}[base];"
+            f"movie={banner_png}[banner];"
+            f"[base][banner]overlay=(W-w)/2:145"
+        )
         run_cmd([
             "ffmpeg", "-y",
             "-ss", str(start_s),
@@ -431,7 +555,7 @@ def render_clips(clips, transcript_data):
 
         clip["file"] = out_mp4
         results_meta.append(clip)
-        print(f"Selesai merender HD: {out_mp4}")
+        print(f"Selesai merender HD dengan desain baru: {out_mp4}")
 
     with open("output/hasil_kurasi.json", "w", encoding="utf-8") as f:
         json.dump(results_meta, f, ensure_ascii=False, indent=2)
